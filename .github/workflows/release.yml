@@ -1,159 +1,35 @@
-name: Build Packages
+name: Build ddns-go (aarch64_generic)
 
+# 仅手动触发，不自动跑
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - v*
+
+# 赋予必要权限
+permissions:
+  contents: read
 
 env:
   PACKAGE_DIRS: "ddns-go luci-app-ddns-go"
 
 jobs:
-  get-version:
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.version.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Get version
-        id: version
-        run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            VERSION=${GITHUB_REF#refs/tags/}
-          else
-            VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "dev")
-          fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Building version: $VERSION"
-
-  scan-packages:
-    runs-on: ubuntu-latest
-    outputs:
-      packages: ${{ steps.scan.outputs.packages }}
-      package-list: ${{ steps.scan.outputs.package-list }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install jq
-        run: sudo apt-get install -y jq
-
-      - name: Scan package directories
-        id: scan
-        run: |
-          PACKAGES_JSON="[]"
-          PACKAGE_LIST=""
-          
-          for dir in ${{ env.PACKAGE_DIRS }}; do
-            if [ -d "$dir" ] && [ -f "$dir/Makefile" ]; then
-              PKG_NAME=$(grep "^PKG_NAME" "$dir/Makefile" | head -1 | cut -d'=' -f2 | tr -d '[:space:]' || echo "")
-              PKG_VERSION=$(grep "^PKG_VERSION" "$dir/Makefile" | head -1 | cut -d'=' -f2 | tr -d '[:space:]' || echo "")
-              PKG_TITLE=$(grep "TITLE:=" "$dir/Makefile" | head -1 | cut -d':=' -f2 | sed 's/^[ \t]*//;s/[ \t]*$//' || echo "")
-              
-              if [ -z "$PKG_NAME" ]; then
-                PKG_NAME="$dir"
-              fi
-              
-              PACKAGES_JSON=$(echo "$PACKAGES_JSON" | jq -c \
-                --arg name "$PKG_NAME" \
-                --arg version "$PKG_VERSION" \
-                --arg dir "$dir" \
-                --arg title "$PKG_TITLE" \
-                '. + [{"name": $name, "version": $version, "dir": $dir, "title": $title}]')
-              
-              if [ -z "$PACKAGE_LIST" ]; then
-                PACKAGE_LIST="$PKG_NAME"
-              else
-                PACKAGE_LIST="$PACKAGE_LIST $PKG_NAME"
-              fi
-              
-              echo "Found package: $PKG_NAME (version: $PKG_VERSION) in $dir"
-            else
-              echo "Warning: $dir is not a valid package directory"
-            fi
-          done
-          
-          {
-            echo "packages<<EOF"
-            echo "$PACKAGES_JSON"
-            echo "EOF"
-            echo "package-list=$PACKAGE_LIST"
-          } >> $GITHUB_OUTPUT
-          
-          echo "Found packages: $PACKAGE_LIST"
-          echo "JSON output: $PACKAGES_JSON"
-
   build:
-    name: Build aarch64_generic
-    needs: [get-version, scan-packages]
+    name: 编译 aarch64_generic IPK
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        arch:
-          - aarch64_generic  # 只保留你要的架构
-        sdk:
-          - openwrt-24.10
-          - SNAPSHOT
-
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Build packages
+      # 编译 OpenWrt 包 (仅你要的架构/版本)
+      - name: 编译 ddns-go
         uses: sirpdboy/gh-action-sdk@go1.26
         env:
-          ARCH: ${{ matrix.arch }}-${{ matrix.sdk }}
+          ARCH: aarch64_generic-openwrt-24.10
           FEEDNAME: packages_ci
           PACKAGES: luci-app-ddns-go
           NO_REFRESH_CHECK: true
 
-      - name: Upload artifacts
+      # 上传编译好的IPK包 (GitHub官方功能，无权限报错)
+      - name: 下载编译好的IPK
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.arch }}-${{ matrix.sdk }}
-          path: |
-            bin/packages/${{ matrix.arch }}/packages_ci/*.ipk
-
-      - name: Create release archive
-        run: |
-          tar -zcvf ${{ matrix.sdk }}-${{ matrix.arch }}.tar.gz -C bin/packages/${{ matrix.arch }}/ packages_ci
-
-      - name: Generate release notes
-        id: release_notes
-        env:
-          VERSION: ${{ needs.get-version.outputs.version }}
-          PACKAGE_LIST: ${{ needs.scan-packages.outputs.package-list }}
-        run: |
-          cat > release-notes.md << 'EOF'
-          # 🚀 OpenWRT Packages ${{ needs.get-version.outputs.version }}
-
-          - [ OPENWRT 24.10 ] IPK 格式
-          - [ SNAPSHOT ] APK 格式
-
-          ## 📦 支持架构
-          aarch64_generic  # ARMv8 64位通用
-
-          ## 已编译包
-          ${{ needs.scan-packages.outputs.package-list }}
-          EOF
-          echo "notes<<EOF" >> $GITHUB_OUTPUT
-          cat release-notes.md >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
-
-      - name: Upload to release
-        uses: ncipollo/release-action@v1
-        with:
-          name: OpenWRT Packages ${{ needs.get-version.outputs.version }}
-          tag: ${{ github.ref_name }}
-          token: ${{ secrets.GITHUB_TOKEN }}
-          allowUpdates: true
-          replacesArtifacts: true
-          artifacts: "${{ matrix.sdk }}-${{ matrix.arch }}.tar.gz"
-          body: ${{ steps.release_notes.outputs.notes }}
+          name: ddns-go-aarch64_generic
+          path: bin/packages/aarch64_generic/packages_ci/*.ipk
